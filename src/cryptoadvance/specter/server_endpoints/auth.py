@@ -73,28 +73,47 @@ def login_method_none():
 
 
 def login_method_rpcpasswordaspin():
-    # This authentiaction method has been especially created for Raspiblitz
-    # We assume here, that no preconfigured node-connection is available
-    # otherwise, which configured node should we use?
-    # We want to get rid of the default node, so we can't use that
-    # Instead we use a default location where we assume the bitcoin.conf
-    # This can be overridden via ENV_var.
-
+    # Annahme: Bitcoin Core läuft und die Cookie-Authentifizierung ist aktiviert
     specter: Specter = app.specter
+    
+    # Falls ein Node konfiguriert ist und die RPC-Verbindung getestet wurde
     if specter.node and specter.node.rpc and specter.node._get_rpc().test_connection():
         rpc = specter.node._get_rpc().clone()
     else:
+        # Versuche, Konfigurationen über das Bitcoin-Datenverzeichnis zu finden
         confs = _detect_rpc_confs_via_datadir(
             None,
-            datadir=app.config["RASPIBLITZ_SPECTER_RPC_LOGIN_BITCOIN_CONF_LOCATION"],
+            datadir=app.config.get("RASPIBLITZ_SPECTER_RPC_LOGIN_BITCOIN_CONF_LOCATION"),
         )
         if len(confs) == 0:
-            flash(
-                "No RPC connection to Bitcoin Core found. Cannot Log you in.", "error"
-            )
+            flash("No RPC connection to Bitcoin Core found. Cannot log you in.", "error")
             return redirect(url_for("login"))
+        
         conf = confs[0]
         rpc = BitcoinRPC(**conf)
+
+    # Teste die Verbindung mit der Cookie-Authentifizierung
+    try:
+        # Lese die Cookie-Datei aus
+        with open("/root/.bitcoin/.cookie", "r") as f:
+            cookie_content = f.read().strip()
+        rpc.cookie = cookie_content
+
+        if rpc.test_connection():
+            # Login als admin bei erfolgreicher Authentifizierung
+            app.login("admin")
+            app.logger.info("AUDIT: Successful login via cookie authentication")
+            return redirect_login(request)
+        else:
+            flash("Could not authenticate via Bitcoin Core RPC cookie.", "error")
+            return redirect(url_for("login"))
+    except Exception as e:
+        app.logger.error(f"Error during cookie authentication: {str(e)}")
+        flash("Error during authentication. Please try again.", "error")
+        return redirect(url_for("login"))
+
+    return deny_login(comment="cookie authentication")
+
 
     # A bit redundant as this has been checked before but let's be sure
     if not rpc.test_connection():
